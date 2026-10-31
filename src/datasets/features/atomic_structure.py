@@ -103,13 +103,13 @@ class AtomicStructure:
             path = value.get("path")
             data = bytes(value["bytes"]) if value.get("bytes") is not None else _read_file(path)
         elif hasattr(value, "coord") and hasattr(value, "get_annotation_categories"):
-            return {"path": None, "bytes": self._write(value)}
+            return {"path": None, "bytes": _write(value)}
         elif type(value).__module__.startswith("rdkit."):
             from atomworks.io.tools.rdkit import atom_array_from_rdkit
 
-            return {"path": None, "bytes": self._write(atom_array_from_rdkit(value))}
+            return {"path": None, "bytes": _write(atom_array_from_rdkit(value))}
         elif type(value).__module__.startswith("ase.") and hasattr(value, "get_positions"):
-            return {"path": None, "bytes": self._write(_from_ase(value))}
+            return {"path": None, "bytes": _write(_from_ase(value))}
         else:
             raise ValueError(
                 "An atomic structure should be a file path, file bytes, a dict with 'path' or 'bytes', a biotite "
@@ -117,7 +117,7 @@ class AtomicStructure:
             )
         data = _decompress(data)
         if not _is_stored(data):
-            data = self._write(self._read(data, path), _entry_id(path))
+            data = _write(self._read(data, path))
         return {"path": os.path.basename(path.split("::")[0]) if path else None, "bytes": data}
 
     def decode_example(self, value: dict, token_per_repo_id=None) -> "AtomArrayPlus":
@@ -151,9 +151,9 @@ class AtomicStructure:
             data = _read_file(path, token_per_repo_id)
         data = _decompress(data)
         if _is_stored(data):
-            from atomworks.io import read_atom_array
+            from atomworks.io import atom_array_from_file
 
-            return read_atom_array(io.BytesIO(data), file_type="bcif")
+            return atom_array_from_file(io.BytesIO(data), "bcif")
         return self._read(data, path)  # a structure file that was not written by this feature, e.g. a path-only row
 
     def flatten(self) -> Union["FeatureType", dict[str, "FeatureType"]]:
@@ -257,21 +257,14 @@ class AtomicStructure:
         atoms = result["asym_unit"] if self.assembly is None else result["assemblies"][str(self.assembly)]
         return atoms[0] if hasattr(atoms, "stack_depth") and atoms.stack_depth() == 1 else atoms
 
-    def _write(self, atoms, entry_id: str = "structure") -> bytes:
-        from atomworks.io.utils.io_utils import CIFWriteConfig, to_cif_buffer
-
-        write_config = CIFWriteConfig(
-            id=entry_id,
-            extra_fields="all",  # everything needed to read the array back exactly
-            chem_comp_source="array",
-            chain_disambiguation="transformation_id"
-            if "transformation_id" in atoms.get_annotation_categories()
-            else None,
-        )
-        return to_cif_buffer(atoms, as_bcif=True, config=write_config).getvalue()
-
 
 # ----------------------------------------------------------------------------------------------- helpers
+
+
+def _write(atoms) -> bytes:
+    from atomworks.io import atom_array_to_file
+
+    return atom_array_to_file(atoms, file_type="bcif")
 
 
 def _is_bcif(data: bytes) -> bool:
@@ -329,15 +322,6 @@ def _resolve_token(path: str, token_per_repo_id: dict) -> Optional[str]:
     pattern = config.HUB_DATASETS_URL if source_url.startswith(config.HF_ENDPOINT) else config.HUB_DATASETS_HFFS_URL
     fields = string_to_dict(source_url, pattern)
     return token_per_repo_id.get(fields["repo_id"]) if fields is not None else None
-
-
-def _entry_id(path: Optional[str]) -> str:
-    if not path:
-        return "structure"
-    name = os.path.basename(path.split("::")[0])
-    for ext in _COMPRESSION_EXTENSIONS:
-        name = name.removesuffix(ext)
-    return os.path.splitext(name)[0] or "structure"
 
 
 def _decompress(data: bytes) -> bytes:
